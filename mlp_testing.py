@@ -9,13 +9,12 @@ import torch.nn.functional as F
 # ecosystem imports
 import slim
 
-#mnist data loading and dependencies for Steven's implementation
+# mnist data loading and dependencies for Steven's implementation
 import idx2numpy
 import numpy as np
 import argparse
 from slim.bench import *
 import matplotlib.pyplot as plt
-
 #2
 
 class MLP(nn.Module):
@@ -197,10 +196,10 @@ def parse_all_args():
     return parser.parse_args()
 
 def get_mnist(args):
-    training_data = idx2numpy.convert_from_file('../slim/data/train-images-idx3-ubyte')
-    training_labels = idx2numpy.convert_from_file('../slim/data/train-labels-idx1-ubyte')
-    test_data = idx2numpy.convert_from_file('../slim/data/t10k-images-idx3-ubyte')
-    test_labels = idx2numpy.convert_from_file('../slim/data/t10k-labels-idx1-ubyte')
+    training_data = idx2numpy.convert_from_file('./data/train-images-idx3-ubyte')
+    training_labels = idx2numpy.convert_from_file('./data/train-labels-idx1-ubyte')
+    test_data = idx2numpy.convert_from_file('./data/t10k-images-idx3-ubyte')
+    test_labels = idx2numpy.convert_from_file('./data/t10k-labels-idx1-ubyte')
 
     #setup training/validation data
     training_labels = training_labels.reshape((training_labels.shape[0], 1))
@@ -439,7 +438,7 @@ def run_mnist(args):
 def map_comparison(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"{device}")
-    maps = [slim.Linear, slim.ButterflyLinear, slim.PerronFrobeniusLinear] 
+    maps = [slim.ButterflyLinear, slim.Linear, slim.PerronFrobeniusLinear] 
     map_names = []
     for map_type in maps:
         a = map_type(1, 1)
@@ -469,7 +468,7 @@ def map_comparison(args):
             bias=True,
             linear_map=map_type,
             nonlin=nn.ReLU,
-            hsizes=[128, 128, 128],
+            hsizes=[512, 512, 256],
             linargs=dict()).to(device)
 
         best_models[map_idx] = model.state_dict()
@@ -546,11 +545,121 @@ def map_comparison(args):
     axes.set_ylim([0, 1])
     plt.show()
 
+def ackley_map_comparison(args):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"{device}")
+    maps = [slim.Linear, slim.ButterflyLinear, slim.PerronFrobeniusLinear]
+    map_names = []
+    for map_type in maps:
+        a = map_type(1, 1)
+        map_names.append(f"{a.__class__.__name__}")
+    training_data, training_labels, validation, validation_labels = get_ackley(args)
+    training_data.to(device).type(torch.float32)
+    training_labels.to(device).type(torch.float32)
+    validation.to(device).type(torch.float32)
+    validation_labels.to(device).type(torch.float32)
+
+    criterion = torch.nn.MSELoss()
+
+    #number of maps x number of epochs (num times val performance is measured) x num performance metrics (MSE, accuracy)
+    #-1 is the placeholder value so it's easy to see what data wasn't aquired
+    performance = torch.full((len(maps), args.epochs, 2), -1.0, dtype=torch.float)
+    best_performance = torch.full((len(maps), 2), -1.0, dtype=torch.float)
+    best_models = []
+    for map_type in maps:
+        best_models.append(dict())
+    best_models = np.asarray(best_models, dtype=dict)
+
+    for map_idx, map_type in enumerate(maps):
+        # setup model and hyperparameters
+        model = MLP(
+            2,
+            1,
+            bias=False,
+            linear_map=map_type,
+            nonlin=nn.ReLU,
+            hsizes=[256, 256, 128],
+            linargs=dict()).to(device).type(torch.float32)
+
+        best_models[map_idx] = model.state_dict()
+
+        learning_rate = args.lr
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        batch_size = args.bs
+        num_datapoints = training_data.shape[0]
+
+        for epoch in range(args.epochs):
+            print(f"Map {map_idx}\tEpoch {epoch}")
+            for batch in range(0, num_datapoints, batch_size):
+                if batch + batch_size >= num_datapoints:
+                    break
+                model.train()
+                model.zero_grad()
+                print(f"type {training_data[0, 0].type}")
+                output = model(training_data[batch:batch + batch_size, :].to(device))
+                true_labels = training_labels[batch:batch + batch_size]
+                loss = criterion(output.to(device).squeeze(), true_labels.to(device).squeeze())
+                loss.backward()
+                optimizer.step()
+
+            # validation test
+            output = model(validation.to(device))
+            pred = output
+            val_acc = torch.eq(pred.to(device), validation_labels.to(device)).float().mean()
+            with torch.no_grad():
+                model.eval()
+                val_loss = criterion(output.to(device).squeeze(), validation_labels.to(device).squeeze())
+            print(f"validation loss&acc: {val_loss.item()}\t{val_acc.item()}")
+
+            #save epoch performance
+            performance[map_idx, epoch, 0] = val_loss.item()
+            performance[map_idx, epoch, 1] = val_acc
+
+            #save model and its performance if it had the best accuracy
+            if val_loss.item() < best_performance[map_idx, 0]:
+                best_performance[map_idx, 0] = val_loss.item()
+                best_performance[map_idx, 1] = val_acc
+                best_models[map_idx] = model.state_dict()
+
+    np.save("map_comparison/best_performance", np.asarray(best_performance))
+    np.save("map_comparison/performance", np.asarray(performance))
+    np.save("map_comparison/model_state_dicts", best_models)
+
+    #print best performance
+    print(f"\nModel validation performance with best validation accuracy:")
+    for map_idx, map_type in enumerate(maps):
+        a = map_type(1, 1)
+        print(f"{a.__class__.__name__}\tCEL: {best_performance[map_idx, 0]}\tAccruacy: {best_performance[map_idx, 1]}")
+
+    epoch_nums = torch.zeros((args.epochs,), dtype=torch.int32)
+    for idx, elem in enumerate(epoch_nums):
+        epoch_nums[idx] = idx
+
+    #graph loss
+    plt.interactive(False)
+    for map_idx, map_type in enumerate(maps):
+        plt.plot(epoch_nums, torch.squeeze(performance[map_idx, :, 0]), label = map_names[map_idx])
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Cross entropy loss")
+    plt.title("Cross Entropy Loss of Different Maps on MNIST")
+    plt.legend()
+    plt.show()
+
+    #graph accuracy
+    for map_idx, map_type in enumerate(maps):
+        plt.plot(epoch_nums, torch.squeeze(performance[map_idx, :, 1]), label = map_names[map_idx])
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Accuracy")
+    plt.title("Acuracy of Different Maps on MNIST")
+    plt.legend()
+    axes = plt.gca()
+    axes.set_ylim([0, 1])
+    plt.show()
 
 if __name__ == '__main__':
     args = parse_all_args()
 
-    map_comparison(args)
+    ackley_map_comparison(args)
 
 
     #grid_search_experiments(args)
