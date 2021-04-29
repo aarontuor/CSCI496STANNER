@@ -554,10 +554,10 @@ def ackley_map_comparison(args):
         a = map_type(1, 1)
         map_names.append(f"{a.__class__.__name__}")
     training_data, training_labels, validation, validation_labels = get_ackley(args)
-    training_data.to(device).type(torch.float32)
-    training_labels.to(device).type(torch.float32)
-    validation.to(device).type(torch.float32)
-    validation_labels.to(device).type(torch.float32)
+    training_data.to(device).type(torch.float64)
+    training_labels.to(device).type(torch.float64)
+    validation.to(device).type(torch.float64)
+    validation_labels.to(device).type(torch.float64)
 
     criterion = torch.nn.MSELoss()
 
@@ -579,7 +579,7 @@ def ackley_map_comparison(args):
             linear_map=map_type,
             nonlin=nn.ReLU,
             hsizes=[256, 256, 128],
-            linargs=dict()).to(device).type(torch.float32)
+            linargs=dict()).to(device).type(torch.float64)
 
         best_models[map_idx] = model.state_dict()
 
@@ -595,7 +595,6 @@ def ackley_map_comparison(args):
                     break
                 model.train()
                 model.zero_grad()
-                print(f"type {training_data[0, 0].type}")
                 output = model(training_data[batch:batch + batch_size, :].to(device))
                 true_labels = training_labels[batch:batch + batch_size]
                 loss = criterion(output.to(device).squeeze(), true_labels.to(device).squeeze())
@@ -656,11 +655,108 @@ def ackley_map_comparison(args):
     axes.set_ylim([0, 1])
     plt.show()
 
+
+def load_trained_model(args):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"{device}")
+    maps = [slim.Linear, slim.ButterflyLinear, slim.PerronFrobeniusLinear]
+    map_names = []
+    for map_type in maps:
+        a = map_type(1, 1)
+        map_names.append(f"{a.__class__.__name__}")
+    training_data, training_labels, validation, validation_labels = get_ackley(args)
+    training_data.to(device).type(torch.float64)
+    training_labels.to(device).type(torch.float64)
+    validation.to(device).type(torch.float64)
+    validation_labels.to(device).type(torch.float64)
+
+    criterion = torch.nn.MSELoss()
+
+    saved_models = np.load("map_comparison/Ackley_Map2/model_state_dicts.npy", allow_pickle=True)
+
+    for map_idx, map_type in enumerate(maps):
+        if 1 == 1:
+            print(f"map type: {map_type}")
+            model = MLP(
+                    2,
+                    1,
+                    bias=False,
+                    linear_map=map_type,
+                    nonlin=nn.ReLU,
+                    hsizes=[256, 256, 128],
+                    linargs=dict()).to(device).type(torch.float64)
+
+        
+            model.load_state_dict(saved_models[map_idx])
+
+            #test loaded model
+            #output = model(validation.to(device))
+            #pred = output
+            #val_acc = torch.eq(pred.to(device), validation_labels.to(device)).float().mean()
+            #with torch.no_grad():
+            #    model.eval()
+            #    val_loss = criterion(output.to(device).squeeze(), validation_labels.to(device).squeeze())
+            #print(f"validation loss&acc: {val_loss.item()}\t{val_acc.item()}")
+
+            #make graphs for all maps modelsfig = plt.figure(figsize=(4,4))
+            #ax = fig.add_subplot(111, projection='3d')
+            #ax.scatter(2,3,4) # plot the point (2,3,4) on the figure
+            #plt.show()
+
+            #all_outputs = torch.zeros(validation.shape[0], requires_grad=False)
+
+            #for i in range(validation.shape[0]):
+            #    input = validation[i, :].to(device).view(1, -1)
+            #    all_outputs[i] = model(input)
+
+            all_outputs = torch.zeros(500, requires_grad=False)
+
+            for i in range(500):
+                input = validation[i, :].to(device).view(1, -1)
+                all_outputs[i] = model(input)
+
+            #make map graphs
+            fig = plt.figure()
+            ax = plt.axes(projection='3d')
+
+            xdata = validation[:500, 0].squeeze()
+            ydata = validation[:500, 1].squeeze()
+            zdata = torch.from_numpy(all_outputs.detach().numpy())
+    
+            ax.scatter3D(xdata, ydata, zdata, c=zdata, cmap='Greens')
+            #ax.set_xlim3d(-30, 30)
+            #ax.set_ylim3d(-30, 30)
+            plt.show()
+        
+    #make ackley graph
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+
+    xdata = validation[:, 0].squeeze()
+    ydata = validation[:, 1].squeeze()
+    zdata = validation_labels
+    
+    xdata = training_data[:, 0].squeeze()
+    ydata = training_data[:, 1].squeeze()
+    zdata = training_labels
+
+    #for idx, xelement in enumerate(xdata):
+    #    if xelement > 20:
+    #        xdata = torch.cat([xdata[:idx], xdata[idx+1:]])
+
+    ax.scatter3D(xdata, ydata, zdata, c=zdata, cmap='Greens')
+    #ax.set_xlim3d(-30, 30)
+    #ax.set_ylim3d(-30, 30)
+    plt.show()
+
+
 if __name__ == '__main__':
     args = parse_all_args()
 
-    ackley_map_comparison(args)
 
+    #ackley_map_comparison(args)
+
+    load_trained_model(args)
 
     #grid_search_experiments(args)
 
