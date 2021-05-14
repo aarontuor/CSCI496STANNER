@@ -559,6 +559,22 @@ def ackley_map_comparison(args):
     validation.to(device).type(torch.float64)
     validation_labels.to(device).type(torch.float64)
 
+    #normalize input and labels
+    #normalize funct: (x-xmin)/(xmax-xmin)
+    #denormalize funct: (xnorm)(xmax-xmin)+xmin
+    input_min = -40
+    input_max = 40
+
+    output_max = torch.max(training_labels)
+    output_min = torch.min(training_labels)
+
+    normalization_params = [input_min, input_max, output_min, output_max]
+
+    training_data = torch.subtract(training_data, input_min) / (input_max - input_min)
+    training_labels = torch.subtract(training_labels, output_min) / (output_max - output_min)
+    validation = torch.subtract(validation, input_min) / (input_max - input_min)
+    validation_labels = torch.subtract(validation_labels, output_min) / (output_max - output_min)
+
     criterion = torch.nn.MSELoss()
 
     #number of maps x number of epochs (num times val performance is measured) x num performance metrics (MSE, accuracy)
@@ -623,6 +639,7 @@ def ackley_map_comparison(args):
     np.save("map_comparison/best_performance", np.asarray(best_performance))
     np.save("map_comparison/performance", np.asarray(performance))
     np.save("map_comparison/model_state_dicts", best_models)
+    np.save("map_comparison/normalization_params", np.asarray(normalization_params))
 
     #print best performance
     print(f"\nModel validation performance with best validation accuracy:")
@@ -669,10 +686,51 @@ def load_trained_model(args):
     training_labels.to(device).type(torch.float64)
     validation.to(device).type(torch.float64)
     validation_labels.to(device).type(torch.float64)
+    
+    saved_models = np.load("map_comparison/Ackley_Norm/model_state_dicts.npy", allow_pickle=True)
+    normalization_params = [-40, 40, 3.0611, 4600300000000000000]
+    performance = np.load("map_comparison/Ackley_Norm/performance.npy", allow_pickle=True)
+
+    #number of maps x number of epochs (num times val performance is measured) x num performance metrics (cross entropy, accuracy)
+    #-1 is the placeholder value so it's easy to see what data wasn't aquired
+    #print best performance
+    print(f"\nModel validation performance with best validation accuracy:")
+    for map_idx, map_type in enumerate(maps):
+        a = map_type(1, 1)
+        print(f"{a.__class__.__name__}\tCEL: {torch.min(torch.from_numpy(performance[map_idx, :, 0]).squeeze())}")
+
+    epoch_nums = torch.zeros((args.epochs,), dtype=torch.int32)
+    for idx, elem in enumerate(epoch_nums):
+        epoch_nums[idx] = idx
+
+    #graph loss
+    plt.interactive(False)
+    for map_idx, map_type in enumerate(maps):
+        plt.plot(epoch_nums, torch.squeeze(torch.from_numpy(performance[map_idx, :, 0])), label = map_names[map_idx])
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Cross entropy loss")
+    plt.title("Cross Entropy Loss of Different Maps on MNIST")
+    plt.legend()
+    plt.show()
+
+    #graph accuracy
+    for map_idx, map_type in enumerate(maps):
+        plt.plot(epoch_nums, torch.squeeze(torch.from_numpy(performance[map_idx, :, 1])), label = map_names[map_idx])
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Accuracy")
+    plt.title("Acuracy of Different Maps on MNIST")
+    plt.legend()
+    axes = plt.gca()
+    axes.set_ylim([0, 1])
+    plt.show()
+
+    #normalize data
+    training_data_norm = torch.subtract(training_data, normalization_params[0]) / (normalization_params[1] - normalization_params[0])
+    training_labels_norm = torch.subtract(training_labels, normalization_params[2]) / (normalization_params[3] - normalization_params[2])
+    validation_norm = torch.subtract(validation, normalization_params[0]) / (normalization_params[1] - normalization_params[0])
+    validation_labels_norm = torch.subtract(validation_labels, normalization_params[2]) / (normalization_params[3] - normalization_params[2])
 
     criterion = torch.nn.MSELoss()
-
-    saved_models = np.load("map_comparison/Ackley_Map2/model_state_dicts.npy", allow_pickle=True)
 
     for map_idx, map_type in enumerate(maps):
         if 1 == 1:
@@ -712,8 +770,16 @@ def load_trained_model(args):
             all_outputs = torch.zeros(500, requires_grad=False)
 
             for i in range(500):
-                input = validation[i, :].to(device).view(1, -1)
+                input = validation_norm[i, :].to(device).view(1, -1)
                 all_outputs[i] = model(input)
+
+            #denormalize output
+            #denormalize funct: (xnorm)(xmax-xmin)+xmin
+            all_outputs = torch.add((all_outputs * (normalization_params[3] - normalization_params[2])), normalization_params[2])
+
+            #find and output denormalized loss
+            loss = criterion(all_outputs.to(device), validation_labels[:500].type(torch.LongTensor).to(device))
+            print(f"validation denormalized loss on best model: {loss.item()}")
 
             #make map graphs
             fig = plt.figure()
