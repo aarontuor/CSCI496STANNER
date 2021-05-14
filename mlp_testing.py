@@ -15,6 +15,7 @@ import numpy as np
 import argparse
 from slim.bench import *
 import matplotlib.pyplot as plt
+import time
 #2
 
 class MLP(nn.Module):
@@ -815,14 +816,111 @@ def load_trained_model(args):
     #ax.set_ylim3d(-30, 30)
     plt.show()
 
+def cluster_basic_test(args):
+    print("cluster basic test start\n")
+    print(f"cuda: {torch.cuda.is_available()}\n")
+
+def cluster_runtime_test(args):
+    #example models will run for 10 epochs (time should be multiplied by 100 for 1000epoch real training estimate)
+    #one example for each of these maps: linear, perron frobenius, butterfly linear
+    #run on the average hyperparameters:
+    #  8 layers, 128 nodes per layer
+    #after training each model, print the number of epochs and time elapsed
+    
+    print(f"=====Cluster time to train test=====")
+    
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
+    maps = [slim.Linear, slim.ButterflyLinear, slim.PerronFrobeniusLinear]
+    map_names = []
+    for map_type in maps:
+        a = map_type(1, 1)
+        map_names.append(f"{a.__class__.__name__}")
+    training_data, training_labels, validation, validation_labels = get_ackley(args)
+    training_data.to(device).type(torch.float64)
+    training_labels.to(device).type(torch.float64)
+    validation.to(device).type(torch.float64)
+    validation_labels.to(device).type(torch.float64)
+
+    #normalize input and labels
+    #normalize funct: (x-xmin)/(xmax-xmin)
+    #denormalize funct: (xnorm)(xmax-xmin)+xmin
+    input_min = -40
+    input_max = 40
+
+    output_max = torch.max(training_labels)
+    output_min = torch.min(training_labels)
+
+    normalization_params = [input_min, input_max, output_min, output_max]
+
+    training_data = torch.subtract(training_data, input_min) / (input_max - input_min)
+    training_labels = torch.subtract(training_labels, output_min) / (output_max - output_min)
+    validation = torch.subtract(validation, input_min) / (input_max - input_min)
+    validation_labels = torch.subtract(validation_labels, output_min) / (output_max - output_min)
+
+    criterion = torch.nn.MSELoss()
+
+    #number of maps x number of epochs (num times val performance is measured) x num performance metrics (MSE, accuracy)
+    #-1 is the placeholder value so it's easy to see what data wasn't aquired
+    performance = torch.full((len(maps), args.epochs, 2), -1.0, dtype=torch.float)
+    best_performance = torch.full((len(maps), 2), -1.0, dtype=torch.float)
+    for map_type in maps:
+        best_models.append(dict())
+    best_models = np.asarray(best_models, dtype=dict)
+
+    print(f"Each model has 8 layers of 128 nodes. lr = {args.lr}, epochs = {args.epochs}\n")
+    for map_idx, map_type in enumerate(maps):
+        start = time.time()
+        print(f"Starting training for {map_names[map_idx]}")
+        # setup model and hyperparameters
+        model = MLP(
+            2,
+            1,
+            bias=False,
+            linear_map=map_type,
+            nonlin=nn.ReLU,
+            hsizes=[128, 128, 128, 128, 128, 128, 128, 128],
+            linargs=dict()).to(device).type(torch.float64)
+
+        learning_rate = args.lr
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        batch_size = args.bs
+        num_datapoints = training_data.shape[0]
+
+        for epoch in range(args.epochs):
+            for batch in range(0, num_datapoints, batch_size):
+                if batch + batch_size >= num_datapoints:
+                    break
+                model.train()
+                model.zero_grad()
+                output = model(training_data[batch:batch + batch_size, :].to(device))
+                true_labels = training_labels[batch:batch + batch_size]
+                loss = criterion(output.to(device).squeeze(), true_labels.to(device).squeeze())
+                loss.backward()
+                optimizer.step()
+
+            # validation test
+            output = model(validation.to(device))
+            pred = output
+            val_acc = torch.eq(pred.to(device), validation_labels.to(device)).float().mean()
+            with torch.no_grad():
+                model.eval()
+                val_loss = criterion(output.to(device).squeeze(), validation_labels.to(device).squeeze())
+        end = time.time()
+        print(f"Finished training for {map_names[map_idx]}")
+        print(f"Epochs: {args.epochs}\tTime to train: {end - start}\n")
+    
 
 if __name__ == '__main__':
     args = parse_all_args()
 
+    cluster_basic_test(args)
+    
+    #cluster_runtime_test(args)
 
     #ackley_map_comparison(args)
 
-    load_trained_model(args)
+    #load_trained_model(args)
 
     #grid_search_experiments(args)
 
