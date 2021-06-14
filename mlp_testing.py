@@ -189,10 +189,12 @@ def parse_all_args():
     parser.add_argument("-lr",type=float,help="learning rate (float) [default: 0.0001]",default=0.0001)
     parser.add_argument("-epochs",type=int,help="Number of training epochs (int) [default: 100]",default=100)
     parser.add_argument("-bs",type=int,help="Batch size (int) [default: 16]",default=16)
-    parser.add_argument("-data",type=str,help="Dataset used. Options: mnist, ackley, add, multiply, xor (str) [default: mnist]",default="mnist")
+    parser.add_argument("-data",type=str,help="Dataset used. Options: mnist, ackley, add, mul, xor (str) [default: mnist]",default="mnist")
     parser.add_argument("-samples",type=int,help="Samples for dataset used if applicable (int) [default: 50000]",default=50000)
     parser.add_argument("-dim",type=int,help="Dimensions for dataset used if applicable (int) [default: 2]",default=2)
     parser.add_argument("-split",type=int,help="Percent of data for training set as a decimal if applicable (float) [default: 0.8]",default=0.8)
+    parser.add_argument("-param",type=str,help="Parameterization used in the model. Options: butterfly, pf, linear (str) [default: linear]", default="linear")
+    parser.add_argument("-trial",type=int,help="Number in trial if applicable (int) [default: 1]", default=1)
 
     return parser.parse_args()
 
@@ -331,15 +333,15 @@ def grid_search_experiments(args):
         best_models.append(dim1)
     best_models = np.asarray(best_models, dtype=dict)
 
-    for dataset_idx, dataset in enumerate(task_datasets):
+    for dataset_idx, dataset in enumerate(task_datasets): # 5 datasets
         X_train, y_train, X_val, y_val = dataset
-        for param_idx, param in enumerate(parameterizations):
-            for layers_idx, layers in  enumerate(num_layers):
-                for h_size_idx, h_size in enumerate(h_sizes):
+        for param_idx, param in enumerate(parameterizations): # 3 params
+            for layers_idx, layers in  enumerate(num_layers): # fix this at 3 layers
+                for h_size_idx, h_size in enumerate(h_sizes): # fix at 100
                     hidden_layers = []
                     for i in range(layers):
                         hidden_layers.append(h_size)
-                    for lr_idx, lr in enumerate(learning_rates):
+                    for lr_idx, lr in enumerate(learning_rates): # pick one or two
                         for trial in range(num_models_each): #num_models_each different random weight initializations
                             #train a model with the given hyperparameters, save the best performing epoch and store its accuracy
                             model = MLP(
@@ -864,6 +866,7 @@ def cluster_runtime_test(args):
     #-1 is the placeholder value so it's easy to see what data wasn't aquired
     performance = torch.full((len(maps), args.epochs, 2), -1.0, dtype=torch.float)
     best_performance = torch.full((len(maps), 2), -1.0, dtype=torch.float)
+    best_models = []
     for map_type in maps:
         best_models.append(dict())
     best_models = np.asarray(best_models, dtype=dict)
@@ -909,12 +912,153 @@ def cluster_runtime_test(args):
         end = time.time()
         print(f"Finished training for {map_names[map_idx]}")
         print(f"Epochs: {args.epochs}\tTime to train: {end - start}\n")
+   
+def train_model_with_params(args):
+    print(f"data: {args.data} param: {args.param} trial: {args.trial}")
     
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
+    
+    criterion = torch.nn.MSELoss()
+    
+    output_size = 1
+    X_train, y_train, X_val, y_val = get_ackley(args)
+    if(args.data == "add"):
+        X_train, y_train, X_val, y_val = get_add(args)
+    elif(args.data == "mul"):
+        X_train, y_train, X_val, y_val = get_multiply(args)
+    elif(args.data == "xor"):
+        X_train, y_train, X_val, y_val = get_xor(args)
+    elif(args.data == "mnist"):
+        X_train, y_train, X_val, y_val = get_mnist(args)
+        output_size = 10
+        criterion = torch.nn.NLLLoss()
+    
+    X_train.to(device)
+    y_train.to(device)
+    X_val.to(device)
+    y_val.to(device)
+    if(args.data != "mnist"):
+	    X_train.type(torch.float64)
+	    y_train.type(torch.float64)
+	    X_val.type(torch.float64)
+	    y_val.type(torch.float64)
+		    
+								     
+     
+    if(args.data == "xor"):
+        print(f"xor x size: {X_train.shape} and {X_val.shape}\nxor y size: {y_train.shape} and {y_val.shape}")
+        
+        
+     
+    param = slim.Linear
+    if(args.param == "pf"):
+        param = slim.PerronFrobeniusLinear
+    elif(args.param == "butterfly"):
+        param = slim.ButterflyLinear
+        
+    num_layers = 3
+    num_nodes_per_layer = 100
+    lr = 0.001
+    epochs = 1000
+    #print(f"num_layers: {num_layers} num_nodes_per: {num_nodes_per_layer} lr: {lr} ep: {epochs}\n")
+	
+	#train model with args
+    #train a model with the given hyperparameters, save the best performing epoch and store its accuracy
+    model = MLP(
+        X_train.shape[1],
+        output_size,
+        bias=True,
+        linear_map=param,
+        nonlin=nn.ReLU,
+        hsizes=[100, 100, 100],
+        linargs=dict()).to(device)#.type(torch.float64)
+    if(args.data != "mnist"):
+        model.type(torch.float64)
+
+    num_train_samples = y_train.shape[0]
+    num_val_samples = y_val.shape[0]
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    batch_size = args.bs
+
+    #start with saving untrained model
+    if(args.data != "mnist"):
+        output = torch.squeeze(model(X_val.to(device)))
+        error = criterion(output.to(device), y_val.to(device))
+    else:
+        output = model(X_val.to(device))
+        error = criterion(F.log_softmax(output, dim=1).to(device), y_val.type(torch.LongTensor).to(device))
+    #print(f"error.item() {error.item()}")
+    performance = error.item()
+    best_model = model.state_dict()
+
+    for epoch in range(epochs):
+        for batch in range(0, num_train_samples, batch_size):
+            if batch + batch_size >= num_train_samples:
+                break
+            model.train()
+            optimizer.zero_grad()
+            output = model(X_train[batch:batch + batch_size, :].to(device))
+            true_labels = y_train[batch:batch + batch_size]
+            #loss = criterion(torch.squeeze(output).to(device), true_labels.to(device))
+            if(args.data != "mnist"):
+                loss = criterion(output.to(device).type(torch.float64).squeeze(), true_labels.to(device).type(torch.float64).squeeze())
+            else:
+                loss = criterion(F.log_softmax(output, dim=1).to(device), true_labels.type(torch.LongTensor).to(device))
+            loss.backward()
+            optimizer.step()
+
+        #save model and performance if it is the best performing so far
+        model.eval()
+        if(args.data != "mnist"):
+	        output = torch.squeeze(model(X_val.to(device)))
+	        error = criterion(output.to(device), y_val.to(device)).to(device)
+        else:
+            output = model(X_val.to(device))
+            error = criterion(F.log_softmax(output, dim=1).to(device), y_val.type(torch.LongTensor).to(device))
+        #print(f"val error: {error.item()}")
+        #print(f"samples: \n{output[0]}\t{y_val[0]}\n{output[1]}\t{y_val[1]}")
+
+        if error.item() < performance:
+            performance = error.item()
+            best_model = model.state_dict()
+
+    #save model and performance after last training step
+    last_model = model.state_dict()
+    model.eval()
+    if(args.data != "mnist"):
+        output = torch.squeeze(model(X_val.to(device)))
+        error = criterion(output.to(device), y_val.to(device))
+    else:
+        output = model(X_val.to(device))
+        error = criterion(F.log_softmax(output, dim=1).to(device), y_val.type(torch.LongTensor).to(device))
+    #print(f"last val error: {error.item()}")
+    #print(f"samples: \n{output[0]}\t{y_val[0]}\n{output[1]}\t{y_val[1]}")
+
+    last_performance = error.item()
+    
+    #send best and last models and performances to file
+    f = open(f"results/best_performance_{args.data}_{args.param}_{args.trial}.txt", "w")
+    f.write(f"data: {args.data}\nparam: {args.param}\ntrial: {args.trial}\nBest performance: {performance}")
+    f.close()
+    f = open(f"results/last_performance_{args.data}_{args.param}_{args.trial}.txt", "w")
+    f.write(f"data: {args.data}\nparam: {args.param}\ntrial: {args.trial}\nLast performance: {last_performance}")
+    f.close()
+    
+    #np.save(f"results/best_performance_{args.data}_{args.param}_{args.trial}", performance)
+    np.save(f"models/best_model_{args.data}_{args.param}_{args.trial}", best_model)
+    #np.save(f"results/last_performance_{args.data}_{args.param}_{args.trial}", last_performance)
+    np.save(f"models/last_model_{args.data}_{args.param}_{args.trial}", last_model)
+
+    print("finished training, saving results, and saving model")
 
 if __name__ == '__main__':
     args = parse_all_args()
 
-    cluster_basic_test(args)
+    train_model_with_params(args)
+
+    #cluster_basic_test(args)
     
     #cluster_runtime_test(args)
 
